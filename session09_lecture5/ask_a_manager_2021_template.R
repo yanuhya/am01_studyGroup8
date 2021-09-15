@@ -16,6 +16,10 @@ googlesheets4::gs4_auth() # google sheets authorisation
 ask_a_manager_2021 <- googlesheets4::read_sheet(url) %>% 
   janitor::clean_names()
 
+# if googlesheets is now working, read local copy
+ask_a_manager_2021 <- read_csv(here::here("data", "ask_a_manager_2021.csv"))
+
+
 skimr::skim(ask_a_manager_2021)
 
 # How is salary distributed?
