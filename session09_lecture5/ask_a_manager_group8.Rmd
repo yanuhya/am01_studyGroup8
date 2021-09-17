@@ -7,7 +7,11 @@ library(countrycode) # to clean up country names
 library(broom)
 library(car)
 library(ggfortify)
+library(quantmod)
 ```
+
+
+# Clean data
 
 Load the ask a manager data set
 
@@ -34,11 +38,17 @@ ask_a_manager_2021 <- ask_a_manager_2021 %>%
   filter(!is.na(industry) & !is.na(highest_level_of_education_completed) & !is.na(gender) & !is.na(race))
 ```
 
+## Country
+
 Now, the only columns where we have missing data is additional_context_on_job_title, additional_context_on_income, state and city
 
-```{r}
-unique_country_values <- unique(ask_a_manager_2021$country) %>% as_tibble()
+```{r warning=FALSE, message=FALSE}
+unique_country_values <- unique(ask_a_manager_2021$country) %>%
+  as_tibble()
+
 unique_country_values$country_code = NA
+
+
 for(i in 1:nrow(unique_country_values)){
   countryToTidy = unique_country_values$value[i]
   unique_country_values$country_code[i] = countrycode(countryToTidy, origin = 'country.name', destination = 'iso3c')
@@ -46,110 +56,53 @@ for(i in 1:nrow(unique_country_values)){
 
 ```
 
-```{r}
-for(i in 1:nrow(unique_country_values)){
-  if(is.na(unique_country_values$country_code[i])){
-    if(unique_country_values$value[i] == "United  States" | 
-    unique_country_values$value[i] == "United Statss" |
-    unique_country_values$value[i] == "	USaa" |
-    unique_country_values$value[i] == "us" |
-    unique_country_values$value[i] == "United Stateds" |
-    unique_country_values$value[i] == "U. S" |
-    unique_country_values$value[i] == "Uniter Statez" |
-    unique_country_values$value[i] == "united stated" |
-    unique_country_values$value[i] == "United Sttes" |
-    unique_country_values$value[i] == "Unitied States" |
-    unique_country_values$value[i] == "USAB" |
-    unique_country_values$value[i] == "Untied States" |
-    unique_country_values$value[i] == "United Statues" |
-    unique_country_values$value[i] == "United statew" |
-    unique_country_values$value[i] == "The US" |
-    unique_country_values$value[i] == "Unite States" |
-    unique_country_values$value[i] == "The US" |
-    unique_country_values$value[i] == "Unites states" |
-    unique_country_values$value[i] == "United Stares" |
-    unique_country_values$value[i] == "Uniteed States" |
-    unique_country_values$value[i] == "USS" |
-    unique_country_values$value[i] == "United Status" |
-    unique_country_values$value[i] == "Uniyes States" |
-    unique_country_values$value[i] == "Uniyed states" |
-    unique_country_values$value[i] == "United Statees" |
-    unique_country_values$value[i] == "United Statea" |
-    unique_country_values$value[i] == "United Stattes" |
-    unique_country_values$value[i] == "United Statesp" |
-    unique_country_values$value[i] == "Unted States" |
-    unique_country_values$value[i] == "United Sates of America" |
-    unique_country_values$value[i] == "United States (I work from home and my clients are all over the US/Canada/PR" |
-    unique_country_values$value[i] == "Worldwide (based in US but short term trips aroudn the world)" |
-    unique_country_values$value[i] == "Uniited States" |
-    unique_country_values$value[i] == "United Sates" |
-    unique_country_values$value[i] == "U. S." |
-    unique_country_values$value[i] == "Unites States" |
-    unique_country_values$value[i] == "United Statws" |
-    unique_country_values$value[i] == "USA-- Virgin Islands" |
-    unique_country_values$value[i] == "United Stated" |
-    unique_country_values$value[i] == "United State of America" |
-    unique_country_values$value[i] == "America" |
-    unique_country_values$value[i] == "United State" |
-    unique_country_values$value[i] == "ISA" |
-    unique_country_values$value[i] == "Unitef Stated" |
-    unique_country_values$value[i] == "USaa" |
-    unique_country_values$value[i] == "america" |
-    unique_country_values$value[i] == "United States- Puerto Rico"|
-    unique_country_values$value[i] == "🇺🇸" |
-    unique_country_values$value[i] == "USD"|
-    unique_country_values$value[i] == "I work for a UAE-based organization, though I am personally in the US."|
-    unique_country_values$value[i] == "United States- Puerto Rico"){
-      unique_country_values$country_code[i] = "USA"
-    }
-    else if(unique_country_values$value[i] == "Scotland" |
-            unique_country_values$value[i] == "England" |
-            unique_country_values$value[i] == "England/UK" |
-            unique_country_values$value[i] == "England, UK." |
-            unique_country_values$value[i] == "United Kindom" |
-            unique_country_values$value[i] == "	England, UK" |
-            unique_country_values$value[i] == "UK (Northern Ireland)" |
-            unique_country_values$value[i] == "UK for U.S. company" |
-            unique_country_values$value[i] == "	England, UK" |
-            unique_country_values$value[i] == "Northern Ireland" |
-            unique_country_values$value[i] == "UK (England)" |
-            unique_country_values$value[i] == "UK, remote" |
-            unique_country_values$value[i] == "Scotland, UK" |
-            unique_country_values$value[i] == "Unites kingdom" |
-            unique_country_values$value[i] == "england" |
-            unique_country_values$value[i] == "Wales, UK" |
-            unique_country_values$value[i] == "UK, but for globally fully remote company" |
-            unique_country_values$value[i] == "Englang" |
-            unique_country_values$value[i] == "Wales" |
-            unique_country_values$value[i] == "Wales (UK)" |
-            unique_country_values$value[i] == "U.K. (northern England)" |
-            uni == "England, UK") {
-      unique_country_values$country_code[i] = "GBR"
-    }
-    else if(unique_country_values$value[i] == "Canadw" |
-            unique_country_values$value[i] == "Can" |
-            unique_country_values$value[i] == "Canda" |
-            unique_country_values$value[i] == "Canada and USA" |
-            unique_country_values$value[i] == "Csnada") {
-      unique_country_values$country_code[i] = "CAN"
-            }
-  }
-}
-```
-
+Then, find misspelled countries that has frequency higher 5 and clean the data
 
 ```{r}
+misspelled_countries <- ask_a_manager_2021[!(ask_a_manager_2021$country %in% (unique_country_values %>%
+                                                      na.omit() %>%
+                                                      select(value) %>% 
+                                                      pull())),]
 
+country_list <- misspelled_countries %>%
+  count(country, sort=TRUE) %>%
+  filter(n >= 5) %>%
+  select(country) %>% 
+  pull()
 
-unique_country_values_to_be_tidied <- unique_country_values %>%
-  filter(is.na(country_code))
+misspelled_countries <- misspelled_countries[misspelled_countries$country %in% country_list,]
+
+misspelled_countries <- misspelled_countries %>%
+  select(country) %>%
+  unique() %>%
+  mutate(country_code = ifelse(country == "Scotland" |
+                                 country == "England", "GBR", ifelse(country == "NZ", "NZL", "USA"
+                                 ))) %>%
+  rbind((unique_country_values %>% na.omit() %>% rename(country = value)))
 ```
 
 ```{r}
-for(i in 1:nrow(ask_a_manager_2021)){
-  countryToTidy = ask_a_manager_2021$country[i]
-  ask_a_manager_2021$country[i] = countrycode(countryToTidy, origin = 'country.name', destination = 'iso3c')
-}
-  
+ask_a_manager_2021 <- ask_a_manager_2021 %>%
+  left_join(misspelled_countries, by="country") %>%
+  drop_na(country_code)
+```
+
+## Race
+
+```{r}
+race_list <- ask_a_manager_2021 %>%
+  count(race, sort=TRUE) %>% 
+  filter(n >= 100) %>% 
+  select(race) %>% 
+  pull()
+
+ask_a_manager_2021 <- ask_a_manager_2021[ask_a_manager_2021$race %in% race_list,]
+```
+
+## Currency
+
+```{r dealing with currenies}
+getFX("CAD/USD", from = "2021-09-10", to = "2021-09-16",
+      auto.assign = TRUE)
 ```
 
