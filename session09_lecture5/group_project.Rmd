@@ -880,6 +880,8 @@ ask_a_manager_2021_race %>%
 
 ## State
 
+As our data is largely concentrated around employees working in the US, we want to investigate further into the differences of salary distribution within the US demographically. To clean the state variable, we only chose entries that have a frequency higher than 10, which leaves us with 50 states and District of Columbia. During this process, we only removed 100 entries in a total of 21562 entries, therefore we can assume that we did not lose any generality during the cleaning.
+
 ```{r}
 # Remove all observations that has NA state, i.e. observations out of US
 ask_a_manager_2021_state <- ask_a_manager_2021[!(is.na(ask_a_manager_2021$state)),]
@@ -913,6 +915,8 @@ ask_a_manager_2021_state_salary <- ask_a_manager_2021_state_salary %>%
   inner_join(MainStates, by="state")
 ```
 
+The map below shows the mean salary for each states in the Mainland US.
+
 ```{r}
 ggplot(ask_a_manager_2021_state_salary) + 
   geom_polygon(aes(x = long, y = lat, group = group, fill = mean_salary),
@@ -936,9 +940,11 @@ ggplot(ask_a_manager_2021_state_salary) +
         panel.grid.minor=element_blank(),
         plot.background=element_blank(),
         plot.title = element_text(size = 15, face = "bold")) +
-  labs(title = "Mean salary for each states in the US") +
+  labs(title = "Mean salary for each states in the Mainland US") +
   NULL
 ```
+
+We can observe from the map that coastal states have a much darker color than the inland states. We will then do a t-test to see if the difference in salary between coastal states and inland states.
 
 ```{r}
 # Identify costal states (Sourced from Wikipedia)
@@ -953,6 +959,9 @@ ask_a_manager_2021_state <- ask_a_manager_2021_state %>%
 t.test(USD_salary ~ coastal_state, data = ask_a_manager_2021_state)
 
 ```
+
+In this t-test, we have a t-statistic of up to 17.267 and a p-value close to 0. We are able to conclude that there is a difference in the salary between inland and coastal states. Demographically, this makes sense as coastal states tends to be more developed due to access to ports for international trading. This will lead to further economic development and hence the higher pay in these regions.
+
 
 # Model
 

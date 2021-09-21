@@ -8,6 +8,8 @@ library(broom)
 library(car)
 library(ggfortify)
 library(quantmod)
+library(maps)
+library(infer)
 ```
 
 
@@ -101,6 +103,8 @@ ask_a_manager_2021 <- left_join(ask_a_manager_2021, currency_rate, by="currency"
 ask_a_manager_2021 <- ask_a_manager_2021[!(is.na(ask_a_manager_2021$USD_salary)),]
 ```
 
+# EDA
+
 ## Race
 
 ```{r}
@@ -124,4 +128,88 @@ industry_list <- ask_a_manager_2021 %>%
 
 ask_a_manager_2021_industry <- ask_a_manager_2021[ask_a_manager_2021$industry %in% industry_list,]
 ```
+
+## State
+
+As our data is largely concentrated around employees working in the US, we want to investigate further into the differences of salary distribution within the US demographically. To clean the state variable, we only chose entries that have a frequency higher than 10, which leaves us with 50 states and District of Columbia. During this process, we only removed 100 entries in a total of 21562 entries, therefore we can assume that we did not lose any generality during the cleaning.
+
+```{r}
+# Remove all observations that has NA state, i.e. observations out of US
+ask_a_manager_2021_state <- ask_a_manager_2021[!(is.na(ask_a_manager_2021$state)),]
+
+# Only include observations with entries higher than 10
+state_list <- ask_a_manager_2021_state %>%
+  dplyr::count(state, sort=TRUE) %>% 
+  filter(n >= 10) %>% 
+  select(state) %>% 
+  pull()
+ask_a_manager_2021_state <- ask_a_manager_2021[ask_a_manager_2021$state %in% state_list,]
+
+```
+
+```{r}
+ask_a_manager_2021_state_salary <- ask_a_manager_2021_state %>%
+  group_by(state) %>% 
+  summarise(mean_salary = mean(USD_salary))
+
+ask_a_manager_2021_state_salary$state <- tolower(ask_a_manager_2021_state_salary$state)
+
+# US Map data
+MainStates <- map_data("state")
+MainStates <- MainStates %>% 
+  rename(state = region)
+
+ask_a_manager_2021_state_salary <- ask_a_manager_2021_state_salary %>% 
+  inner_join(MainStates, by="state")
+```
+
+The map below shows the mean salary for each states in the Mainland US.
+
+```{r}
+ggplot(ask_a_manager_2021_state_salary) + 
+  geom_polygon(aes(x = long, y = lat, group = group, fill = mean_salary),
+               color = "white", size = 0.2) +
+  scale_fill_continuous(name="Mean Salary", 
+            low = "white", high = "darkblue", limits = c(50000,120000), 
+            na.value = "grey50") +
+  theme_bw() +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        legend.key.size = unit(5, 'mm'),
+        legend.title = element_text(size = 10, face = "bold"), 
+        legend.text = element_text(size = 7),
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.background=element_blank(),
+        plot.title = element_text(size = 15, face = "bold")) +
+  labs(title = "Mean salary for each states in the Mainland US") +
+  NULL
+```
+
+We can observe from the map that coastal states have a much darker color than the inland states. We will then do a t-test to see if the difference in salary between coastal states and inland states.
+
+```{r}
+# Identify costal states (Sourced from Wikipedia)
+coastal_states <- c("alaska","california","hawaii","oregon","washington", "maine", "new hampshire", "massachusetts", "rhode island", "connecticut", "new york", "new jersey", "delaware", "maryland", "virginia", "north carolina", "south carolina", "georgia", "florida")
+
+ask_a_manager_2021_state$state <- tolower(ask_a_manager_2021_state$state)
+
+ask_a_manager_2021_state <- ask_a_manager_2021_state %>% 
+  mutate(coastal_state = ifelse(state %in% coastal_states, "Yes", "No"))
+
+# T-test to test for the significance of the differences
+t.test(USD_salary ~ coastal_state, data = ask_a_manager_2021_state)
+
+```
+
+In this t-test, we have a t-statistic of up to 17.267 and a p-value close to 0. We are able to conclude that there is a difference in the salary between inland and coastal states. Demographically, this makes sense as coastal states tends to be more developed due to access to ports for international trading. This will lead to further economic development and hence the higher pay in these regions.
+
+
+
 
