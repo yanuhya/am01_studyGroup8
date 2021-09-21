@@ -1,0 +1,1635 @@
+---
+title: "Applied Statistics: Final Assignment"
+author: "Study group 8: Francois Mizrahi, Estelle Tessaro, Zhicong Hu, Chuhan Zhang, Zervaan Borok, Anuhya Yallabandi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: zenburn
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    code_folding: show
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  tidy = TRUE,
+  size = "small"
+)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library("plyr")
+library("do")
+library(googlesheets4)
+library(tidyverse)
+library(janitor) 
+library(skimr)
+library(countrycode) # to clean up country names
+library(broom)
+library(car)
+library(ggfortify)
+library(quantmod)
+library(ggplot2)
+library(infer)
+library(kableExtra)
+library(maps)
+library(tidyquant)
+library(dplyr)
+```
+
+
+# Clean data
+
+Load the ask a manager data set
+
+```{r}
+ask_a_manager_2021 <- read_csv(here::here("data", "ask_a_manager_2021.csv"))
+```
+Skim the data set to see if there are any missing or duplicate values
+
+```{r}
+skimr::skim(ask_a_manager_2021)
+```
+
+We see that the complete rate of "other_monetary_comp" and "currency_other" is 0. Hence, we can get rid of these columns.
+
+```{r}
+ask_a_manager_2021 <- ask_a_manager_2021 %>%
+  select( -other_monetary_comp, - currency_other)
+```
+
+Let us also filter out the data where industry, highest level of educatin, gender and race is NA
+
+```{r}
+ask_a_manager_2021 <- ask_a_manager_2021 %>%
+  filter(!is.na(industry) & !is.na(highest_level_of_education_completed) & !is.na(gender) & !is.na(race))
+```
+
+## Country
+
+Now, the only columns where we have missing data is additional_context_on_job_title, additional_context_on_income, state and city
+
+```{r warning=FALSE, message=FALSE}
+unique_country_values <- unique(ask_a_manager_2021$country) %>%
+  as_tibble()
+
+unique_country_values$country_code = NA
+
+
+for(i in 1:nrow(unique_country_values)){
+  countryToTidy = unique_country_values$value[i]
+  unique_country_values$country_code[i] = countrycode(countryToTidy, origin = 'country.name', destination = 'iso3c')
+}
+
+```
+
+Then, find misspelled countries that has frequency higher 5 and clean the data.
+
+```{r}
+misspelled_countries <- ask_a_manager_2021[!(ask_a_manager_2021$country %in% (unique_country_values %>%
+                                                      na.omit() %>%
+                                                      select(value) %>% 
+                                                      pull())),]
+
+country_list <- misspelled_countries %>%
+  count(country, sort=TRUE) %>%
+  filter(n >= 5) %>%
+  select(country) %>% 
+  pull()
+
+misspelled_countries <- misspelled_countries[misspelled_countries$country %in% country_list,]
+
+misspelled_countries <- misspelled_countries %>%
+  select(country) %>%
+  unique() %>%
+  mutate(country_code = ifelse(country == "Scotland" |
+                                 country == "England", "GBR", ifelse(country == "NZ", "NZL", "USA"
+                                 ))) %>%
+  rbind((unique_country_values %>% na.omit() %>% rename(country = value)))
+
+ask_a_manager_2021 <- ask_a_manager_2021 %>%
+  left_join(misspelled_countries, by="country") %>%
+  drop_na(country_code)
+```
+
+## Currency
+
+As salaries are expressed in different currencies we will convert all salaries to $USD. We understand that using a basic conversion using current rates opens the discussion on purchasing power parity, however we chose to ignore it in this study.
+
+```{r dealing with currenies}
+from <- c("USD", "GBP", "CAD", "EUR", "AUD", "CHF", "ZAR", "SEK", "HKD", "JPY")
+to <- "USD"
+currency_rate <- rownames_to_column(getQuote(paste0(from, to, "=X")), "currency")[,c(1,3)] %>%
+  mutate(currency = str_replace(currency, "USD=X", ""))
+currency_rate[currency_rate$currency == "AUD","currency"] <- "AUD/NZD"
+
+ask_a_manager_2021 <- left_join(ask_a_manager_2021, currency_rate, by="currency") %>%
+  mutate(USD_salary = annual_salary * Last)
+
+# We have 121 observations that has unsure currency, to let it not mess with our income variable (important variable), we decide to remove them entire.
+ask_a_manager_2021 <- ask_a_manager_2021[!(is.na(ask_a_manager_2021$USD_salary)),]
+```
+
+## Race
+
+```{r}
+race_list <- ask_a_manager_2021 %>%
+  count(race, sort=TRUE) %>% 
+  filter(n >= 100) %>% 
+  select(race) %>% 
+  pull()
+
+ask_a_manager_2021_race <- ask_a_manager_2021[ask_a_manager_2021$race %in% race_list,]
+```
+
+## Industry
+
+```{r}
+industry_list <- ask_a_manager_2021 %>%
+  count(industry, sort=TRUE) %>% 
+  filter(n >= 100) %>% 
+  select(industry) %>% 
+  pull()
+
+ask_a_manager_2021_industry <- ask_a_manager_2021[ask_a_manager_2021$industry %in% industry_list,]
+```
+
+
+
+# Analysis on Gender
+
+Let's do a general analysis to see how respondents are divided among gender, race and industry.
+
+Can we suggest any racial or gender discrimination going on in relation to the salaries people have entered? If so, is this discrimination country or industry-specific? Also, do salaries vary across industries? Is there variability in these industries?
+
+First, let's look at gender.
+
+```{r}
+ask_a_manager_2021 %>%
+  group_by(gender) %>%
+  na.omit() %>%
+  summarise(gender_count = n()) %>%
+  arrange(gender_count) %>%
+  kable()
+
+
+ask_a_manager_2021 %>%
+  group_by(gender) %>%
+  na.omit() %>%
+  summarise(gender_count = n()) %>%
+  arrange(gender_count) %>%
+  ggplot(gender_analysis, mapping = aes(x=fct_reorder(gender,-gender_count), y=gender_count)) +
+  geom_col() +
+  labs(title="Gender of survey respondents", x="Count", y="Gender") +
+  NULL
+```
+
+Respondents of the survey were predominantly white. Let us see if there is any noticeable difference in the pays of men and women, and cross-check that with null hypothesis
+
+```{r}
+ggplot(ask_a_manager_2021 %>% filter(gender == "Man" | gender == "Woman"), 
+       aes(x=USD_salary, y=reorder(gender,USD_salary))) +
+  scale_x_log10() +
+  xlim(0,400000) +
+  geom_boxplot() 
+```
+
+> We can see that the median salary of Males is greater than women.
+
+
+Let us do a null hypothesis, saying the mean sample of salary for men and women is the same
+
+```{r}
+# hypothesis testing using t.test() 
+ask_a_manager_man_women <- ask_a_manager_2021 %>%
+   filter(gender == "Man" | gender == "Woman")
+
+t.test(USD_salary ~ gender, data = ask_a_manager_man_women)
+
+# hypothesis testing using infer package
+infer_gender_salary <- ask_a_manager_man_women %>%
+  specify(USD_salary ~ gender) %>%
+  calculate(stat = "diff in means", order = c("Man", "Woman"))
+
+null_dist <- ask_a_manager_man_women %>%
+  # specify variables
+  specify(USD_salary ~ gender) %>%
+  
+  # assume independence, i.e, there is no difference
+  hypothesize(null = "independence") %>%
+  
+  # generate 1000 reps, of type "permute"
+  generate(reps = 1000, type = "permute") %>%
+  
+  # calculate statistic of difference, namely "diff in means"
+  calculate(stat = "diff in means", order = c("Man", "Woman"))
+
+
+```
+
+> The t-stat for our hypothesis test is 2.2818, which is more than our boundary of 2/-2. This leads us to reject the null hypothesis. Additionally, our p-value is less than 5%, which means that we are not likely to get a sampling error in our data. So we can assume that our alternative hypothesis is right, ie. that there is a difference between the mean salaries of males and females.
+
+Let us see the confidence intervals for pays of men and women.
+
+```{r}
+  female_pay <- ask_a_manager_2021 %>% 
+  filter(gender == "Woman") %>%
+  dplyr::summarise(gender = "Woman",
+            mean_pay = mean(USD_salary, na.rm=TRUE),
+            SD_pay = sd(USD_salary, na.rm=TRUE),
+            count_pay = n()) %>% 
+  mutate(SE_pay = SD_pay/sqrt(count_pay),
+         lower_CI = mean_pay - (2*SE_pay),
+         upper_CI = mean_pay + (2*SE_pay))
+
+male_pay <- ask_a_manager_2021 %>% 
+  filter(gender == "Man") %>%
+  dplyr::summarise(gender = "Man",
+            mean_pay = mean(USD_salary, na.rm=TRUE),
+            SD_pay = sd(USD_salary, na.rm=TRUE),
+            count_pay = n()) %>% 
+  mutate(SE_pay = SD_pay/sqrt(count_pay),
+         lower_CI = mean_pay - (2*SE_pay),
+         upper_CI = mean_pay + (2*SE_pay))
+
+male_female_pay <- rbind(female_pay,male_pay)
+
+ggplot(male_female_pay) + 
+geom_errorbar( aes(y =gender ,xmin = lower_CI, xmax= upper_CI, width =0.1, size= 2, x=mean_pay, color = gender)) +
+  geom_point( aes(y = gender, x= mean_pay, size = 2, color = gender)) +
+  geom_text(aes(x=mean_pay, y=gender), label = round(male_female_pay$mean_pay,2), 
+            hjust=0.5, vjust=-1, size=3)  +
+  theme(legend.position = "none") +
+  labs(title= "Do men and women have the same mean pay?", subtitle ="95% confidence intervals overlap",
+      x ="Mean Pay", y="Gender")
+
+
+male_female_pay
+```
+
+> We see that the confidence intervals of pays for men and women don't overlap. Also, the confidence interval for men is huge as compared to women because the samples of men were 4754 which is ~0.25 times the sample size for women
+
+
+Now, let us get the countries with most data so that we can see if the difference of pay in gender is only in specific countries
+
+```{r}
+ask_a_manager_2021 %>%
+  group_by(country_code) %>%
+  dplyr::summarise(country_code_count = n()) %>%
+  arrange(- country_code_count) %>%
+  head(4)
+```
+
+Let us see the boxplots for pay in USA, Canada, UK and Australia
+
+```{r}
+ask_a_manager_2021 %>% 
+  filter(gender == "Man" | gender == "Woman") %>%
+  filter(country_code == "USA" | country_code == "CAN" | country_code == "GBR" | country_code == "AUS" ) %>%
+  ggplot(aes(x= USD_salary, y=reorder(gender,USD_salary))) +
+  facet_wrap(~country_code)+
+  xlim(0,400000) +
+ # theme(axis.text.x = element_text(angle=90, hjust=1)) +
+  geom_boxplot() 
+```
+
+> We can see that the the median of salary is higher for males in all the countries
+
+
+Now, let us compare the salaries of people with equal relevant experience in the field
+
+```{r}
+ask_a_manager_2021$years_of_experience_in_field <- factor(ask_a_manager_2021$years_of_experience_in_field, levels = c("1 year or less", "2 - 4 years", "5-7 years" , "8 - 10 years", "11 - 20 years", "21 - 30 years", "31 - 40 years"  , "41 years or more"))
+
+ask_a_manager_2021 %>% 
+  filter(gender == "Man" | gender == "Woman") %>%
+  ggplot(aes(x= USD_salary, y=reorder(gender,USD_salary))) +
+  facet_wrap(~years_of_experience_in_field)+
+  xlim(0,400000) +
+ # theme(axis.text.x = element_text(angle=90, hjust=1)) +
+  geom_boxplot() 
+```
+The graph says that the pay scale difference increases with the increase in experience in the field. 
+
+Let us hypothesize that the mean pay scale difference is 0 when the experience in the field is 1 year or less
+
+```{r}
+# hypothesis testing using t.test() 
+ask_a_manager_man_women_1y <- ask_a_manager_2021 %>%
+  filter(gender == "Man" | gender == "Woman") %>%
+  filter(years_of_experience_in_field == "1 year or less")
+
+t.test(USD_salary ~ gender, data = ask_a_manager_man_women_1y)
+
+# hypothesis testing using infer package
+infer_gender_salary <- ask_a_manager_man_women_1y %>%
+  specify(USD_salary ~ gender) %>%
+  calculate(stat = "diff in means", order = c("Man", "Woman"))
+
+null_dist <- ask_a_manager_man_women_1y %>%
+  # specify variables
+  specify(USD_salary ~ gender) %>%
+  
+  # assume independence, i.e, there is no difference
+  hypothesize(null = "independence") %>%
+  
+  # generate 1000 reps, of type "permute"
+  generate(reps = 1000, type = "permute") %>%
+  
+  # calculate statistic of difference, namely "diff in means"
+  calculate(stat = "diff in means", order = c("Man", "Woman"))
+
+
+```
+
+> We see that the t-stat is 1 which is less than 2. Hence, our hypothesis that the mean pay scale difference is 0 proved true.
+
+
+Now let us hypothesize that the mean pay scale difference is 0 when the experience in the field is 2-4 years
+
+```{r}
+# hypothesis testing using t.test() 
+ask_a_manager_man_women_2_4y <- ask_a_manager_2021 %>%
+  filter(gender == "Man" | gender == "Woman") %>%
+  filter(years_of_experience_in_field == "2 - 4 years")
+
+t.test(USD_salary ~ gender, data = ask_a_manager_man_women_2_4y)
+
+# hypothesis testing using infer package
+infer_gender_salary <- ask_a_manager_man_women_2_4y %>%
+  specify(USD_salary ~ gender) %>%
+  calculate(stat = "diff in means", order = c("Man", "Woman"))
+
+null_dist <- ask_a_manager_man_women_2_4y %>%
+  # specify variables
+  specify(USD_salary ~ gender) %>%
+  
+  # assume independence, i.e, there is no difference
+  hypothesize(null = "independence") %>%
+  
+  # generate 1000 reps, of type "permute"
+  generate(reps = 1000, type = "permute") %>%
+  
+  # calculate statistic of difference, namely "diff in means"
+  calculate(stat = "diff in means", order = c("Man", "Woman"))
+
+```
+
+
+We see that the t-stat is 5.5 which is greater than 2. Hence, we now understand the pay difference becomes statistically significant from 2 - 4 years. 
+
+> With our overall analysis in gender, we saw that there is a statistically significant difference in salary means between genders
+
+
+
+# Analysis by race
+
+Since our data has reponses predominantly from people of race "White", let us group all the other races under "Non-White"
+```{r}
+ask_a_manager_2021_white_non_white <- ask_a_manager_2021_race
+ask_a_manager_2021_white_non_white$race[ask_a_manager_2021_white_non_white$race!="White"] <- "Non-White" 
+
+ask_a_manager_2021_white_non_white %>%
+  group_by(race) %>%
+  dplyr::summarise(race_count = n()) %>%
+  arrange(race_count)
+```
+
+
+Now let us see the probability density of salaries by race
+
+```{r}
+ask_a_manager_2021_white_non_white %>% 
+  ggplot(aes(x= USD_salary, color = race)) + 
+  xlim(0,400000) +
+ # theme(axis.text.x = element_text(angle=90, hjust=1)) +
+  geom_density() 
+```
+From the density plot of salary by race, we do not see a direct relationship of salary with race
+
+
+Let us hypothesize that the mean salary of "White" is same as the mean salary of "Non-White"
+
+```{r}
+# hypothesis testing using t.test() 
+t.test(USD_salary ~ race, data = ask_a_manager_2021_white_non_white)
+
+# hypothesis testing using infer package
+infer_gender_salary <- ask_a_manager_2021_white_non_white %>%
+  specify(USD_salary ~ race) %>%
+  calculate(stat = "diff in means", order = c("White", "Non-White"))
+
+null_dist <- ask_a_manager_2021_white_non_white %>%
+  # specify variables
+  specify(USD_salary ~ race) %>%
+  
+  # assume independence, i.e, there is no difference
+  hypothesize(null = "independence") %>%
+  
+  # generate 1000 reps, of type "permute"
+  generate(reps = 1000, type = "permute") %>%
+  
+  # calculate statistic of difference, namely "diff in means"
+  calculate(stat = "diff in means", order = c("White", "Non-White"))
+
+```
+
+> The t-stat is 1.36 which is less than 2. It hence proves our hypothesis that the salary difference between "White" and "Non-White" people is negligible. 
+
+
+Let us further see with the help of confidence intervals, the difference in pay between "White" and "non White" people
+
+```{r}
+  white_pay <- ask_a_manager_2021_white_non_white %>% 
+   filter(race == "White" ) %>%
+  dplyr::summarise(race = "White",
+            mean_pay = mean(USD_salary, na.rm=TRUE),
+            SD_pay = sd(USD_salary, na.rm=TRUE),
+            count_pay = n()) %>% 
+  mutate(SE_pay = SD_pay/sqrt(count_pay),
+         lower_CI = mean_pay - (2*SE_pay),
+         upper_CI = mean_pay + (2*SE_pay))
+
+non_white_pay <- ask_a_manager_2021_white_non_white %>% 
+  filter(race == "Non-White") %>%
+  dplyr::summarise(race = "Non-White",
+            mean_pay = mean(USD_salary, na.rm=TRUE),
+            SD_pay = sd(USD_salary, na.rm=TRUE),
+            count_pay = n()) %>% 
+  mutate(SE_pay = SD_pay/sqrt(count_pay),
+         lower_CI = mean_pay - (2*SE_pay),
+         upper_CI = mean_pay + (2*SE_pay))
+
+white_non_white_pay <- rbind(white_pay,non_white_pay)
+
+ggplot(white_non_white_pay) + 
+geom_errorbar( aes(y =race ,xmin = lower_CI, xmax= upper_CI, width =0.1, size= 2, x=mean_pay, color = race)) +
+  geom_point( aes(y = race, x= mean_pay, size = 2, color = race)) +
+  geom_text(aes(x=mean_pay, y=race), label = round(white_non_white_pay$mean_pay,2), 
+            hjust=0.5, vjust=-1, size=3)  +
+  theme(legend.position = "none") +
+  labs(title= "Do \"White\" and \"Non-White\" have the same mean pay?", subtitle ="95% confidence intervals overlap",
+      x ="Mean Pay", y="Race")
+
+
+white_non_white_pay
+```
+
+> We see that the confidence interval of pay between "White" and "Non-White" overlap completely. Also, since the sample size of "Black or African American" is 0.17X that of "White", the confidence interval of "Non-White" is very broad.
+
+
+But let us further divide it based on relevant work experience in the field and analyse
+
+```{r}
+ask_a_manager_2021_white_non_white %>% 
+  ggplot(aes(x= USD_salary, y=reorder(race, USD_salary))) +
+  facet_wrap(~years_of_experience_in_field)+
+  xlim(0,400000) +
+ # theme(axis.text.x = element_text(angle=90, hjust=1)) +
+  geom_boxplot() 
+```
+
+> We see that the salary difference between "White" and "Non-white" is more pronounced for specific brackets of relevant work experience. 
+
+
+Let us also check the difference in pay for "White" and "Non-white" across industries
+
+```{r}
+ask_a_manager_2021_white_non_white_industry <- ask_a_manager_2021_white_non_white[ask_a_manager_2021_white_non_white$industry %in% industry_list,]
+
+ask_a_manager_2021_white_non_white_industry %>% 
+  ggplot(aes(x= USD_salary, y=reorder(race, USD_salary))) +
+  facet_wrap(~industry)+
+  xlim(0,400000) +
+ # theme(axis.text.x = element_text(angle=90, hjust=1)) +
+  geom_boxplot() 
+```
+
+The salary across all the industries seems similar for people belonging to "White" and "Non-White" race.
+
+
+Let us see how the mean salary of other races compare
+
+```{r}
+ask_a_manager_2021_race %>%
+  filter(country_code == "USA") %>% 
+  group_by(race) %>%
+  summarise(mean_salary = mean(USD_salary)) %>% 
+  arrange(-mean_salary) %>% 
+  head(4) %>% 
+  ggplot(aes(x= race, y=mean_salary, fill = race)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(title = "Mean salary by Race in the US", x= "Race", y= "Mean Salary") +
+  geom_col()
+```
+> We see that the "Asian or Asian American" earn more than the other races in the US
+
+
+> With our overall analysis by race, we saw that we did not see any noticeable difference in salaries between White and Non-White. In the US, the salary of "Asian or Asian American" is the highest
+
+# Analysis on Industry
+
+```{r}
+ask_a_manager_2021_industry %>%
+  group_by(industry) %>%
+  summarise(industry_count = n()) %>%
+  arrange(-industry_count) %>%
+  kable()
+
+ask_a_manager_2021_industry %>%
+  group_by(industry) %>%
+  na.omit() %>%
+  summarise(industry_count = n()) %>%
+  arrange(industry_count) %>%
+  ggplot(industry_analysis, mapping = aes(x=industry_count, y=fct_reorder(industry,industry_count))) +
+  geom_col() +
+  labs(title="Industry of survey respondents", x="Count", y="Industry") +
+  NULL
+```
+From this initial analysis, we can see that respondents work in many different industries, but the most reported working in the Computing or Tech industry.
+
+## Differences in Salaries accross Industries
+
+Next, let's see how salaries compare accross industries, and whether these differences are country-specific.
+
+```{r}
+ask_a_manager_2021_industry %>%
+  group_by(industry) %>%
+  arrange(industry) %>%
+  ggplot(ask_a_manager_2021, mapping = aes(x=USD_salary, y=reorder(industry,USD_salary))) +
+  scale_x_log10() +
+  theme_bw() +
+  xlim(0,200000) +
+  geom_boxplot() +
+  labs(title="Boxplot on Salaries by Industry", x="Salary", y="Industry") +
+  NULL
+```
+Respondents in the Computing or Tech industry also respondent having the highest median salaries, followed by Engineering/Manufacturing, Business/Consulting and Law. Lowest median salaries occur in Retail, Hospitality & Events and Social Work. 
+
+Let's do a null hypothesis to confirm/reject our initial observations. We could create a Null Hypothesis stating the mean sample for the lowest and highest paying industries are the same. However, that would be a bit boring. Let's instead compare the two highest paying industries by median, Computing/Tech and Engineering/Manufacturing.
+
+```{r}
+ask_a_manager_industries <- ask_a_manager_2021_industry %>%
+   filter(industry == "Computing or Tech" | industry == "Engineering or Manufacturing")
+
+t.test(USD_salary ~ industry, data = ask_a_manager_industries)
+```
+
+```{r}
+# hypothesis testing using infer package
+infer_industry_salary <- ask_a_manager_industries %>%
+  specify(USD_salary ~ industry) %>%
+  calculate(stat = "diff in means", order = c("Computing or Tech", "Engineering or Manufacturing"))
+
+null_dist <- ask_a_manager_industries %>%
+  # specify variables
+  specify(USD_salary ~ industry) %>%
+  
+  # assume independence, i.e, there is no difference
+  hypothesize(null = "independence") %>%
+  
+  # generate 1000 reps, of type "permute"
+  generate(reps = 1000, type = "permute") %>%
+  
+  # calculate statistic of difference, namely "diff in means"
+  calculate(stat = "diff in means", order = c("Computing or Tech", "Engineering or Manufacturing"))
+```
+
+Even for the two highest paid industries, the t-stat for our hypothesis test is 17.215, which is more than our boundary of 2/-2. This leads us to reject the null hypothesis. Additionally, our p-value is less than 5%, which means that we are not likely to get a sampling error in our data. So we can assume that our alternative hypothesis is right, ie. that there is a difference between the salaries of both of these industries.
+
+## Variabilities in Salaries accross Industries
+
+We've also observed huge variabilities in salaries compared by industries, with extreme outliers. Let's thus have a closer look at these industries standard deviations'.
+
+```{r}
+ask_a_manager_2021_industry %>%
+  group_by(industry) %>%
+  summarise(salary_mean_byindustry = mean(USD_salary),
+            salary_sd_byindustry = sd(USD_salary)) %>%
+  arrange(industry) %>%
+  slice(0:10) %>%
+  ggplot(aes(x=salary_sd_byindustry, y=salary_mean_byindustry)) +
+  geom_point() +
+  theme_bw() +
+  ggrepel::geom_text_repel(aes(label = industry)) +
+  labs(title="Variability and mean of salaries by industry", x="Variability of Salary", y="Means of Salary") +
+  NULL
+```
+
+> We can infer from the plot above that the Art & Design industry, while not being the highest paid industry on average, has huge variabilities in salaries. Same goes for the Agirculture/Forestry industry.
+
+## Geographical Differences in Salaries accross Industries
+
+Let's now have a geographical look at salaries by industry. Do some industries have higher average salaries in some countries, compared to others? For the sake of our analysis, let's only look at the four countries with the most data. 
+
+```{r}
+ask_a_manager_2021_industry %>%
+  group_by(country_code) %>%
+  summarise(country_code_count = n()) %>%
+  arrange(- country_code_count) %>%
+  head(4)
+```
+
+Let's analyse the 5 highest paying industries on average in the United States, Canada, Great Britain and Australia. 
+
+```{r}
+ask_a_manager_2021_industry %>% 
+  filter(industry == "Computing or Tech" | industry == "Engineering or Manufacturing" |industry == "Business or Consulting" |industry == "Law" |industry == "Utilities or Telecommunications" ) %>%
+  filter(country_code == "USA" | country_code == "CAN" | country_code == "GBR" | country_code == "AUS" ) %>%
+  ggplot(aes(x= USD_salary, y=reorder(industry, USD_salary))) +
+  facet_wrap(~country_code)+
+  theme_bw() +
+  xlim(0,400000) +
+  geom_boxplot() +
+  labs(title="Boxplot on top 5 industries by country", x="Salary", y="Industry") +
+  NULL
+```
+
+> From the previous plot, we can infer that median salaries for these industries are usually higher in the United States. Median salaries in Business or Consulting are highest in Australia, with USA, Great Britain and Canada following behind, respectively. Computing/Tech jobs are best paid in the US, then in Canada and Australia, by median. Jobs in the Law sector are paid pretty much the same accross all locations, but USA has been shown to paid their lawyers the most disproportionate amounts compared to the geographical median.
+
+## Differences in Salaries and Experience accross Industries, 
+
+Lastly, let's look at industries vs years of experience. Are there industries that will increase salaries more with increasing years of experience than others? Again, let's look at the top 5 industries.
+
+```{r}
+ask_a_manager_2021_industry$years_of_experience_in_field <- factor(ask_a_manager_2021_industry$years_of_experience_in_field, levels = c("1 year or less", "2 - 4 years", "5-7 years" , "8 - 10 years", "11 - 20 years", "21 - 30 years", "31 - 40 years"  , "41 years or more"))
+
+ask_a_manager_2021_industry %>% 
+  filter(industry == "Computing or Tech" | industry == "Engineering or Manufacturing" |industry == "Business or Consulting" |industry == "Law" |industry == "Utilities or Telecommunications" ) %>%
+  ggplot(aes(x= USD_salary, y=industry)) +
+  facet_wrap(~years_of_experience_in_field)+
+  xlim(0,400000) +
+  theme_bw() +
+  geom_boxplot() +
+  labs(title="Boxplot on top 4 industries by years of experience", x="Salary", y="Industry") +
+  NULL
+```
+
+> From the above plot, we can infer that salaries in the Business/Consulting have the highest rise with experience. Median salaries for respondents with 1 year or less and 41 years or more of experience differ by almost 100 000 USD. Next in this category are Computing/Tech and Engineering/Manufacturing, with increases in salaries of almost 50 000 USD between minimum and maximum experience. Last on that list comes Law, where we can observe almost no salary promotions. However, this might be due to a lack of observations.
+
+## Impact of Education
+
+```{r}
+#industry, salary, degree
+
+#select the top ten industry, which contains the industry frequencies larger than 794
+industry_list <- ask_a_manager_2021_industry %>%
+  count(industry, sort=TRUE) %>% 
+  filter(n >= 794) %>% 
+  select(industry) %>% 
+  pull()
+
+ask_a_manager_2021_industry_top10 <- ask_a_manager_2021_industry[ask_a_manager_2021_industry$industry %in% industry_list,]
+
+#create a ggplot to look at the Relation between Industry and Salary
+ggplot(ask_a_manager_2021_industry_top10,aes(y=fct_reorder(industry,USD_salary),x=USD_salary))+
+  geom_boxplot()+
+  xlim(0,200000)+
+  labs(title="Relation between Industry and Salary", x="",y="")
+
+
+```
+
+> we can see that the computing and tech had the highest median sakary, while the primary and secondary education had the lowestmedian salary.
+
+```{r}
+#Relation between salary and degree
+
+#create a table to look at each level of education 
+table(ask_a_manager_2021_industry$highest_level_of_education_completed)
+
+#salary distribution
+ggplot(ask_a_manager_2021_industry,aes(x=USD_salary))+
+  geom_histogram()+
+  xlim(0,200000)
+
+summary(ask_a_manager_2021_industry$USD_salary)
+
+#create boxplot to descrive the relationship between education and salary
+ggplot(ask_a_manager_2021_industry,aes(y=fct_reorder(highest_level_of_education_completed,USD_salary),x=USD_salary))+
+  geom_boxplot()+
+  xlim(0,200000)+
+  labs(title="Relation between Degree and Salary", x="",y="")
+```
+
+
+>In all, people with professional degree as their highest degree had the highest median salary, with the PhD degree coming behind it. People who had high school degree as their highest degree had lowest median salary. 
+
+
+```{r}
+#Analyze the relationship between highest degree and the industry, trying to figure out what industry need what kinds of degree
+table_industry_degree <- table(ask_a_manager_2021_industry_top10 $industry,ask_a_manager_2021_industry_top10$highest_level_of_education_completed)
+addmargins(table_industry_degree)
+
+matrix_industry_degree <- as.matrix(table_industry_degree)
+for (i in 1:nrow(matrix_industry_degree)){
+        for (j in 1:ncol(matrix_industry_degree)){
+                matrix_industry_degree[i,j] <- log(matrix_industry_degree[i,j])
+        }
+}
+
+heatmap(matrix_industry_degree,Rowv=NA,Colv=NA,scale="column",margins=c(5,3),cm.colors(256,start=02,end=0.5),cexRow=0.8,cexCol=0.9)
+```
+
+
+> We can see the relationship between highest education level and the industry. For industry like "Law", most people with the professional degree such as JD, as the color is the darkest one. Another similar pattern is for higher education, where most people hold the PhD degree. For computing or tech industry, most people hold some college degree, high school degree and college degree for their highest education level. For health care industry, professional degree is needed, as the color was darker than other degree holders. 
+
+
+# Focus on the US
+
+```{r}
+#use table to find out the top 6 countries
+table(ask_a_manager_2021$country_code)
+
+#the top 6 countries are: USA CAN GBR AUS NZL IRL
+
+top_6_country<- ask_a_manager_2021 %>% 
+  filter(country_code %in% c("USA","CAN","GBR","AUS","NZL","IRL"))
+
+# create plot to find which country had the most average salary
+country_salary <- ddply(top_6_country,.(country_code),summarize,
+               N=length(country_code),
+               median=median(USD_salary))
+  
+country_salary$country_code<-factor(country_salary$country_code,levels = c("USA","CAN","GBR","AUS","NZL","IRL"))
+a<-country_salary[order(country_salary$country_code),]
+a$value = seq(0.15, 0.65, 0.1)
+a<-as.data.frame(a)
+a$N<-as.numeric(a$N)
+a$mean<-as.numeric(a$median)
+a$value<-as.numeric(a$value)
+p1 <- ggplot(a, aes(x=reorder(country_code,median),y=median,size=N))+ 
+  geom_point(aes(size=median,color=-1*log10(value)))+
+  scale_size(rang=c(5,15))+
+  scale_colour_gradient(low="mediumblue",high="pink")+
+  labs(color=expression(-log[10](Pvalue)),size="Questionaire Count",  
+       x="Median Salary",y="Country",title="Median Salary in different countries")
+ p1
+```
+
+> we can conclude that, the USA, which has the most questionaire data, had the highest median salary as well, and it had the median salary of more than 800000 US dollars. The No.2 highest median salary is Australia, which is about 72000 US dollars. The UK, however, had the lowest median salary compared to other five countries. 
+
+
+## State
+
+As our data is largely concentrated around employees working in the US, we want to investigate further into the differences of salary distribution within the US demographically. To clean the state variable, we only chose entries that have a frequency higher than 10, which leaves us with 50 states and District of Columbia. During this process, we only removed 100 entries in a total of 21562 entries, therefore we can assume that we did not lose any generality during the cleaning.
+
+```{r}
+# Remove all observations that has NA state, i.e. observations out of US
+ask_a_manager_2021_state <- ask_a_manager_2021[!(is.na(ask_a_manager_2021$state)),]
+
+
+# Only include observations with entries higher than 10
+state_list <- ask_a_manager_2021_state %>%
+  count(state, sort=TRUE) %>% 
+  filter(n >= 10) %>% 
+  select(state) %>% 
+  pull()
+
+ask_a_manager_2021_state <- ask_a_manager_2021[ask_a_manager_2021$state %in% state_list,]
+
+```
+
+```{r}
+ask_a_manager_2021_state_salary <- ask_a_manager_2021_state %>%
+  group_by(state) %>% 
+  summarise(mean_salary = mean(USD_salary))
+
+ask_a_manager_2021_state_salary$state <- tolower(ask_a_manager_2021_state_salary$state)
+
+# US Map data
+MainStates <- map_data("state")
+MainStates <- MainStates %>% 
+  rename(state = region)
+
+ask_a_manager_2021_state_salary <- ask_a_manager_2021_state_salary %>% 
+  inner_join(MainStates, by="state")
+```
+
+The map below shows the mean salary for each states in the Mainland US.
+
+```{r}
+ggplot(ask_a_manager_2021_state_salary) + 
+  geom_polygon(aes(x = long, y = lat, group = group, fill = mean_salary),
+               color = "white", size = 0.2) +
+  scale_fill_continuous(name="Mean Salary", 
+            low = "white", high = "darkblue", limits = c(50000,120000), 
+            na.value = "grey50") +
+  theme_bw() +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        legend.key.size = unit(5, 'mm'),
+        legend.title = element_text(size = 10, face = "bold"), 
+        legend.text = element_text(size = 7),
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.background=element_blank(),
+        plot.title = element_text(size = 15, face = "bold")) +
+  labs(title = "Mean salary for each states in the US") +
+  NULL
+```
+
+We can observe from the map that coastal states have a much darker color than the inland states. We will then do a t-test to see if the difference in salary between coastal states and inland states.
+
+```{r}
+# Identify costal states (Sourced from Wikipedia)
+coastal_states <- c("alaska","california","hawaii","oregon","washington", "maine", "new hampshire", "massachusetts", "rhode island", "connecticut", "new york", "new jersey", "delaware", "maryland", "virginia", "north carolina", "south carolina", "georgia", "florida")
+
+ask_a_manager_2021_state$state <- tolower(ask_a_manager_2021_state$state)
+
+ask_a_manager_2021_state <- ask_a_manager_2021_state %>% 
+  mutate(coastal_state = ifelse(state %in% coastal_states, "Yes", "No"))
+
+# T-test to test for the significance of the differences
+t.test(USD_salary ~ coastal_state, data = ask_a_manager_2021_state)
+
+```
+
+In this t-test, we have a t-statistic of up to 17.267 and a p-value close to 0. We are able to conclude that there is a difference in the salary between inland and coastal states. Demographically, this makes sense as coastal states tends to be more developed due to access to ports for international trading. This will lead to further economic development and hence the higher pay in these regions.
+
+```{r}
+# in USA, the difference of salary between bachelor and master degree
+table(ask_a_manager_2021_industry$country_code)
+
+#choose only college degree and master degree holder in USA
+dif_degree<-ask_a_manager_2021_industry %>% 
+  filter(country_code =="USA") %>% 
+  filter(highest_level_of_education_completed=="College degree" | highest_level_of_education_completed=="Master's degree") %>% 
+  select(country_code,USD_salary,highest_level_of_education_completed)
+
+#plot the boxplot of the differennt salary between this two degree holders
+ggplot(dif_degree %>% select(USD_salary,highest_level_of_education_completed) %>% na.omit(), aes(x= USD_salary, y=highest_level_of_education_completed )) +
+  geom_boxplot()+
+  xlim(0,200000)
+
+#constructed confidence interval for bachelor degree holder in USA
+confidence_interval_bachelor <- dif_degree %>%
+  filter(highest_level_of_education_completed=="College degree" ) %>%
+  select(USD_salary) %>%
+  na.omit() %>%
+  summarise(mean_salary_bachelor = mean(USD_salary),
+            stder_salary_bachelor = sd(USD_salary)/ sqrt(n()),
+            lower_bound_salary_bachelor_interval = mean_salary_bachelor - (1.96*stder_salary_bachelor),
+            upper_bound_salary_bachelor_interval = mean_salary_bachelor + (1.96*stder_salary_bachelor))
+
+#constructed confidence interval for master's degree holder in USA
+confidence_interval_master <- dif_degree %>%
+  filter(highest_level_of_education_completed=="Master's degree") %>%
+  select(USD_salary) %>%
+  na.omit() %>%
+  summarise(mean_salary_master = mean(USD_salary),
+            stder_salary_master = sd(USD_salary)/ sqrt(n()),
+            lower_bound_salary_master_interval = mean_salary_master - (1.96*stder_salary_master),
+            upper_bound_salary_master_interval = mean_salary_master + (1.96*stder_salary_master))
+```
+
+
+>We could use t.test to figure out the relationship between different degree and salary.
+Null hypothesis: there is no difference between different degree and salary
+
+```{r}
+#t.test of the relationship between different degree and salary
+t.test(USD_salary ~ highest_level_of_education_completed, data = dif_degree)
+```
+
+> According to the t test, the t value equals to -4.6402, which is far away from -2, and the p value was far smaller than 0.05,so we can reject the hypothesis that there is no difference between bechelor degree salary and master's degree salary in USA.
+
+```{r}
+obs_diff <- dif_degree %>%
+  specify(USD_salary~ highest_level_of_education_completed) %>%
+  calculate(stat = "diff in means", order = c("Master's degree", "College degree"))
+
+null_dist <- dif_degree %>%
+  # specify variables
+  specify(USD_salary~ highest_level_of_education_completed) %>%
+  
+  # assume independence, i.e, there is no difference
+  hypothesize(null = "independence") %>%
+  
+  # generate 1000 reps, of type "permute"
+  generate(reps = 1000, type = "permute") %>%
+  
+  # calculate statistic of difference, namely "diff in means"
+  calculate(stat = "diff in means", order = c("Master's degree", "College degree"))
+
+ggplot(data = null_dist, aes(x = stat)) +
+  geom_histogram(bins=30)
+
+null_dist %>% visualize() +
+  shade_p_value(obs_stat = obs_diff, direction = "two-sided")
+
+null_dist %>%
+  get_p_value(obs_stat = obs_diff, direction = "two_sided")
+```
+
+> We can visualise to see how many of these null permutations have a difference of at least obs_diff of 5856.
+
+
+# Model
+
+## Drop unnecessary columns
+```{r}
+df = subset(ask_a_manager_2021, select = -c(job_title, additional_context_on_job_title, additional_context_on_income, state, country) )
+df = df[!(df$USD_salary == 0),]
+```
+
+
+## Get frequency count from each city and select top 30
+```{r}
+df_city <- df %>% 
+            count(city) %>%
+            arrange(desc(n))
+head(df_city, 50)
+```
+
+
+## Create dummy variables for city column
+```{r}
+df$Boston <- ifelse(df$city == 'Boston', 1, 0)
+df$Chicago <- ifelse(df$city == 'Chicago', 1, 0)
+df$NewYork <- ifelse(df$city == 'New York', 1, 0)
+df$Seattle <- ifelse(df$city == 'Seattle', 1, 0)
+df$London <- ifelse(df$city == 'London', 1, 0)
+df$SanFrancisco <- ifelse(df$city == 'San Francisco', 1, 0)
+df$NewYorkCity <- ifelse(df$city == 'New York City', 1, 0)
+df$LosAngeles <- ifelse(df$city == 'Los Angeles', 1, 0)
+df$Portland <- ifelse(df$city == 'Portland', 1, 0)
+df$Toronto <- ifelse(df$city == 'Toronto', 1, 0)
+df$Minneapolis <- ifelse(df$city == 'Minneapolis', 1, 0)
+df$Washington <- ifelse(df$city == 'Washington', 1, 0)
+df$Austin <- ifelse(df$city == 'Austin', 1, 0)
+df$Philadelphia <- ifelse(df$city == 'Philadelphia', 1, 0)
+df$Atlanta <- ifelse(df$city == 'Atlanta', 1, 0)
+df$Denver <- ifelse(df$city == 'Denver', 1, 0)
+df$WashingtonDC <- ifelse(df$city == 'Washington, DC', 1, 0)
+df$Houston <- ifelse(df$city == 'Houston', 1, 0)
+df$Pittsburgh <- ifelse(df$city == 'Pittsburgh', 1, 0)
+df$Vancouver <- ifelse(df$city == 'Vancouver', 1, 0)
+df$Dallas <- ifelse(df$city == 'Dallas', 1, 0)
+df$Madison <- ifelse(df$city == 'Madison', 1, 0)
+df$Columbus <- ifelse(df$city == 'Columbus', 1, 0)
+df$Baltimore <- ifelse(df$city == 'Baltimore', 1, 0)
+df$Indianapolis <- ifelse(df$city == 'Indianapolis', 1, 0)
+df$SanDiego <- ifelse(df$city == 'San Diego', 1, 0)
+df$Raleigh <- ifelse(df$city == 'Raleigh', 1, 0)
+df$Cleveland <- ifelse(df$city == 'Cleveland', 1, 0)
+df$Phoenix <- ifelse(df$city == 'Phoenix', 1, 0)
+df$Richmond <- ifelse(df$city == 'Richmond', 1, 0)
+df$Ottawa <- ifelse(df$city == 'Ottawa', 1, 0)
+df$Remote <- ifelse(df$city == 'Remote', 1, 0)
+df$Arlington <- ifelse(df$city == 'Arlington', 1, 0)
+df$Nashville <- ifelse(df$city == 'Nashville', 1, 0)
+
+```
+
+
+## Create dummy variables for industry column
+```{r}
+df$industry_finance <- ifelse(df$industry == 'Accounting, Banking & Finance', 1, 0)
+df$industry_agriculture <- ifelse(df$industry == 'Agriculture or Forestry', 1, 0)  
+df$industry_art <- ifelse(df$industry == 'Art & Design', 1, 0)
+df$industry_business <- ifelse(df$industry == 'Business or Consulting', 1, 0)
+df$industry_tech <- ifelse(df$industry == 'Computing or Tech', 1, 0)
+df$industry_higher_education <- ifelse(df$industry == 'Education (Higher Education)', 1, 0)
+df$industry_primary_education <- ifelse(df$industry == 'Education (Primary/Secondary)', 1, 0)
+df$industry_engineering <-   ifelse(df$industry == 'Engineering or Manufacturing', 1, 0)
+df$industry_entertainment <- ifelse(df$industry == 'Entertainment', 1, 0)
+df$industry_government <- ifelse(df$industry == 'Government and Public Administration', 1, 0)  
+df$industry_health <- ifelse(df$industry == 'Health care', 1, 0)  
+df$industry_events <- ifelse(df$industry == 'Hospitality & Events', 1, 0)
+df$industry_insurance <- ifelse(df$industry == 'Insurance', 1, 0)
+df$industry_law <- ifelse(df$industry == 'Law', 1, 0)
+df$industry_marketing <- ifelse(df$industry == 'Marketing, Advertising & PR', 1, 0)
+df$industry_media <- ifelse(df$industry == 'Media & Digital', 1, 0)
+df$industry_npo <- ifelse(df$industry == 'Nonprofits', 1, 0)
+df$industry_property <- ifelse(df$industry == 'Property or Construction', 1, 0)
+df$industry_hr <- ifelse(df$industry == 'Recruitment or HR', 1, 0)
+df$industry_retail <- ifelse(df$industry == 'Retail', 1, 0)
+df$industry_sales <- ifelse(df$industry == 'Sales', 1, 0)
+df$industry_social_work <- ifelse(df$industry == 'Social Work', 1, 0)
+df$industry_transport <- ifelse(df$industry == 'Transport or Logistics', 1, 0)
+df$industry_telecom <-   ifelse(df$industry == 'Utilities & Telecommunications', 1, 0)
+  
+```
+
+
+## Create dummy variables for race column
+```{r}
+df$race_white <- ifelse(df$race == 'White', 1, 0)
+df$race_asian_white <- ifelse(df$race == 'Asian or Asian American, White', 1, 0)
+df$race_other <- ifelse(df$race == 'Another option not listed here or prefer not to answer', 1, 0)
+df$race_asian_american <- ifelse(df$race == 'Asian or Asian American', 1, 0)
+df$race_black_white <- ifelse(df$race == 'Black or African American, White', 1, 0)
+df$race_hispanic <- ifelse(df$race == 'Hispanic, Latino, or Spanish origin', 1, 0)
+df$race_black <- ifelse(df$race == 'Black or African American', 1, 0)
+df$race_hispanic_white <- ifelse(df$race == 'Hispanic, Latino, or Spanish origin, White', 1, 0) 
+```
+
+
+## Create dummy variables for gender column
+```{r}
+df$gender_man <- ifelse(df$gender == 'Man', 1, 0)
+df$gender_woman <- ifelse(df$gender == 'Woman', 1, 0)
+df$gender_non_binary <- ifelse(df$gender == 'Non-binary', 1, 0)
+df$gender_other <- ifelse(df$gender == 'Other or prefer not to answer', 1, 0)
+```
+
+
+## Create dummy variables for education column
+```{r}
+df$education_high_school <- ifelse(df$highest_level_of_education_completed == 'High School', 1, 0)
+df$education_some_college <- ifelse(df$highest_level_of_education_completed == 'Some college', 1, 0)
+df$education_college <- ifelse(df$highest_level_of_education_completed == 'College degree', 1, 0)
+df$education_masters <- ifelse(df$highest_level_of_education_completed == "Master's degree", 1, 0)
+df$education_phd <- ifelse(df$highest_level_of_education_completed == 'PhD', 1, 0)
+df$education_professional <- ifelse(df$highest_level_of_education_completed == 'Professional degree (MD, JD, etc.)', 1, 0)
+```
+
+
+## Create dummy variables for age column
+```{r}
+
+df$age_18_24 <- ifelse(df$how_old_are_you == '18-24', 1, 0)
+df$age_25_34 <- ifelse(df$how_old_are_you == '25-34', 1, 0)
+df$age_35_44 <- ifelse(df$how_old_are_you == '35-44', 1, 0)
+df$age_45_54 <- ifelse(df$how_old_are_you == '45-54', 1, 0)
+df$age_55_64 <- ifelse(df$how_old_are_you == '55-64', 1, 0)
+df$age_65 <- ifelse(df$how_old_are_you == '65 or over', 1, 0)
+
+```
+
+
+## Create dummy variables for years of experience in field column
+```{r}
+
+df$years_of_experience_in_field_1 <- ifelse(df$years_of_experience_in_field == '1 year or less', 1, 0)
+df$years_of_experience_in_field_2_4 <- ifelse(df$years_of_experience_in_field == '2 - 4 years', 1, 0)
+df$years_of_experience_in_field_5_7 <- ifelse(df$years_of_experience_in_field == '5-7 years', 1, 0)
+df$years_of_experience_in_field_8_10 <- ifelse(df$years_of_experience_in_field == '8 - 10 years', 1, 0)
+df$years_of_experience_in_field_11_20 <- ifelse(df$years_of_experience_in_field == '11 - 20 years', 1, 0)
+df$years_of_experience_in_field_21_30 <- ifelse(df$years_of_experience_in_field == '21 - 30 years', 1, 0)
+df$years_of_experience_in_field_31_40 <- ifelse(df$years_of_experience_in_field == '31 - 40 years', 1, 0)
+df$years_of_experience_in_field_41 <- ifelse(df$years_of_experience_in_field == '41 years or more', 1, 0)
+
+```
+
+
+## Create dummy variables for years of overall professional experience column
+```{r}
+
+df$overall_years_of_professional_experience_1 <- ifelse(df$overall_years_of_professional_experience == '1 year or less', 1, 0)
+df$overall_years_of_professional_experience_2_4 <- ifelse(df$overall_years_of_professional_experience == '2 - 4 years', 1, 0)
+df$overall_years_of_professional_experience_5_7 <- ifelse(df$overall_years_of_professional_experience == '5-7 years', 1, 0)
+df$overall_years_of_professional_experience_8_10 <- ifelse(df$overall_years_of_professional_experience == '8 - 10 years', 1, 0)
+df$overall_years_of_professional_experience_11_20 <- ifelse(df$overall_years_of_professional_experience == '11 - 20 years', 1, 0)
+df$overall_years_of_professional_experience_21_30 <- ifelse(df$overall_years_of_professional_experience == '21 - 30 years', 1, 0)
+df$overall_years_of_professional_experience_31_40 <- ifelse(df$overall_years_of_professional_experience == '31 - 40 years', 1, 0)
+df$overall_years_of_professional_experience_41 <- ifelse(df$overall_years_of_professional_experience == '41 years or more', 1, 0)
+
+```
+
+
+## Log transform the currency-adjusted salaries
+```{r}
+df <- mutate(df, log_income = log10(USD_salary))
+```
+
+
+## Create boxplot to identify outliers
+```{r}
+boxplot(df$log_income, plot=TRUE)$out
+```
+
+
+## Create dataframe without outliers present in log_income
+```{r}
+outliers <- boxplot(df$log_income, plot=FALSE)$out
+df_1 <- df
+df_1 <- df_1[-which(df_1$log_income %in% outliers),]
+```
+
+
+## Create boxplot of dataframe without outliers
+```{r}
+boxplot(df_1$log_income, plot=TRUE)$out
+```
+
+
+## Split both dataframes into training and testing sets
+```{r}
+dt_1 = sort(sample(nrow(df), nrow(df)*.75))
+train_1 <- df[dt_1,]
+test_1 <- df[-dt_1,]
+
+dt_2 = sort(sample(nrow(df_1), nrow(df_1)*.75))
+train_2 <- df_1[dt_2,]
+test_2 <- df_1[-dt_2,]
+```
+
+
+
+## We will create various models with both dataframes
+
+### First is the dataframe with the aforementioned outliers included
+
+#### This is the model with all the explanatory variables (that have been converted to dummy variables) included
+```{r}
+
+model_lm_1 <- lm(log_income ~ 
+ race_white                                      +   race_asian_white                                +  race_other                                      +         
+ race_asian_american                             +   race_black_white                                +  race_hispanic                                   +
+ race_black                                      +   race_hispanic_white                             +  gender_man                                      +
+ 
+ gender_woman                                    +   gender_non_binary                               +  gender_other                                    +
+ 
+ education_high_school                           +   education_some_college                          +  education_college                               +
+ education_masters                               +   education_phd                                   +  education_professional                          +
+ 
+ age_18_24                                       +   age_25_34                                       +  age_35_44                                       +
+ age_45_54                                       +   age_55_64                                       +  age_65                                          +
+ 
+ years_of_experience_in_field_1                  +   years_of_experience_in_field_2_4                +  years_of_experience_in_field_5_7                +         
+ years_of_experience_in_field_8_10               +   years_of_experience_in_field_11_20              +  years_of_experience_in_field_21_30              +         
+ years_of_experience_in_field_31_40              +   years_of_experience_in_field_41                 +  overall_years_of_professional_experience_1      +   
+ 
+ overall_years_of_professional_experience_2_4    +   overall_years_of_professional_experience_5_7    +  overall_years_of_professional_experience_8_10   +
+ overall_years_of_professional_experience_11_20  +   overall_years_of_professional_experience_21_30  +  overall_years_of_professional_experience_31_40  +
+ overall_years_of_professional_experience_41     +   
+ 
+Boston  +
+Chicago +
+NewYork  +
+Seattle +
+London +
+SanFrancisco + 
+NewYorkCity +
+LosAngeles +
+Portland +
+Toronto + 
+Minneapolis  +
+Washington +
+Austin +
+Philadelphia +
+Atlanta +
+Denver +
+WashingtonDC +
+Houston +
+Pittsburgh + 
+Vancouver +
+Dallas +
+Madison + 
+Columbus +
+Baltimore +
+Indianapolis +
+SanDiego +
+Raleigh +
+Cleveland +
+Phoenix +
+Richmond +
+Ottawa +
+Remote +
+Arlington +
+Nashville +
+
+
+ industry_finance             +                          
+ industry_agriculture         +                 industry_art                 +                  industry_business               +              
+ industry_tech                +                 industry_higher_education    +                  industry_primary_education      +             
+ industry_engineering         +                 industry_entertainment       +                  industry_government             +            
+ industry_health              +                 industry_events              +                  industry_insurance              +           
+ industry_law                 +                 industry_marketing           +                  industry_media                  +          
+ industry_npo                 +                 industry_property            +                  industry_hr                     +         
+ industry_retail              +                 industry_sales               +                  industry_social_work            +        
+ industry_transport           +                 industry_telecom
+ 
+ 
+ 
+ , data = train_1)
+
+summary(model_lm_1)
+```
+
+
+#### Collinearity
+```{r}
+# Check for perfect collinearity in explanatory variables
+alias(model_lm_1)
+```
+
+
+#### Variance Inflation Factor (will not work if there is perfect collinearity between explanatory variables)
+```{r}
+# car::vif(model_lm_1)
+```
+
+
+#### AIC & BIC for model evaluation
+```{r}
+AIC_1 <- AIC(model_lm_1, k = 99)
+BIC_1 <- BIC(model_lm_1)
+```
+
+
+#### Evaluate Model Prediction
+```{r}
+p_1 <- predict.lm(model_lm_1, test_1)
+
+test_1a <- test_1
+
+test_1a$predict <- p_1
+
+ggplot(test_1a, aes(x = predict, y = log_income))+ 
+    geom_point() +
+    geom_abline(color = "blue")
+
+```
+
+
+#### Calculate RMSE for model
+```{r}
+n <- nrow(test_1a)
+
+diff <- test_1a$predict - test_1a$log_income
+
+squared_diff <- diff^2
+
+sum_diff <- sum(squared_diff, na.rm = TRUE)
+
+RMSE_1 <- sqrt(sum_diff/n)
+
+RMSE_1
+```
+
+
+
+### Second is the optimal model we have found given the baseline model above
+```{r}
+model_lm_2 <- lm(log_income ~ race_white +  race_asian_american     +   gender_man      +                            
+ education_high_school       +                   education_some_college   +                      education_college     +                        
+ education_masters           +                   education_phd            +                                             
+ years_of_experience_in_field_1 +                years_of_experience_in_field_2_4 +              years_of_experience_in_field_5_7 +             
+ years_of_experience_in_field_8_10  +            years_of_experience_in_field_11_20 +                      
+ overall_years_of_professional_experience_31_40 +
+ 
+Boston  +
+Chicago +
+NewYork  +
+Seattle +
+London +
+SanFrancisco + 
+NewYorkCity +
+LosAngeles +
+Portland +
+Toronto + 
+Minneapolis  +
+Washington +
+Austin +
+Philadelphia +
+Atlanta +
+Denver +
+WashingtonDC +
+Houston +
+Vancouver +
+Dallas +
+Baltimore +
+SanDiego +
+Raleigh +
+Remote +
+Arlington +
+  
+industry_finance    +                          
+industry_agriculture  +                         industry_art                 +                  industry_business               +              
+industry_tech          +                        industry_higher_education   +                   industry_primary_education       +             
+industry_engineering    +                       industry_government               +            
+industry_events        +                        industry_media                      +           industry_npo               +                    
+industry_property    +                          industry_retail             +                   industry_sales      +                           industry_social_work                        
+ 
+ 
+ , data = train_1)
+
+summary(model_lm_2)
+
+```
+
+
+#### Collinearity
+```{r}
+# Check for perfect collinearity in explanatory variables
+alias(model_lm_2)
+```
+
+
+#### Variance Inflation Factor (will not work if there is perfect collinearity between explanatory variables)
+```{r}
+car::vif(model_lm_2)
+```
+
+
+#### AIC & BIC for model evaluation
+```{r}
+AIC_2 <- AIC(model_lm_2, k = 52)
+BIC_2 <- BIC(model_lm_2)
+```
+
+
+#### Evaluate Model Prediction
+```{r}
+p_2 <- predict.lm(model_lm_2, test_1)
+
+test_1b <- test_1
+
+test_1b$predict <- p_2
+
+ggplot(test_1b, aes(x = predict, y = log_income))+ 
+    geom_point() +
+    geom_abline(color = "blue")
+
+```
+
+
+#### Calculate RMSE for model
+```{r}
+n_2 <- nrow(test_1b)
+
+diff_2 <- test_1b$predict - test_1b$log_income
+
+squared_diff_2 <- diff_2^2
+
+sum_diff_2 <- sum(squared_diff_2, na.rm = TRUE)
+
+RMSE_2 <- sqrt(sum_diff_2/n_2)
+
+RMSE_2
+```
+
+
+### Next is the dataframe with the aforementioned outliers excluded
+
+#### This is the model with all the explanatory variables (that have been converted to dummy variables) included
+```{r}
+
+model_lm_3 <- lm(log_income ~ race_white + race_asian_white  + race_other   +                                 
+ race_asian_american                             +   race_black_white                                +  race_hispanic                                   +
+ race_black                                      +   race_hispanic_white                             +  gender_man                                      +
+ 
+ gender_woman                                    +   gender_non_binary                               +  gender_other                                    +
+ 
+ education_high_school                           +   education_some_college                          +  education_college                               +
+ education_masters                               +   education_phd                                   +  education_professional                          +
+ 
+ age_18_24                                       +   age_25_34                                       +  age_35_44                                       +
+ age_45_54                                       +   age_55_64                                       +  age_65                                          +
+ 
+ years_of_experience_in_field_1                  +   years_of_experience_in_field_2_4                +  years_of_experience_in_field_5_7                +         
+ years_of_experience_in_field_8_10               +   years_of_experience_in_field_11_20              +  years_of_experience_in_field_21_30              +         
+ years_of_experience_in_field_31_40              +   years_of_experience_in_field_41                 +  overall_years_of_professional_experience_1      +   
+ 
+ overall_years_of_professional_experience_2_4    +   overall_years_of_professional_experience_5_7    +  overall_years_of_professional_experience_8_10   +
+ overall_years_of_professional_experience_11_20  +   overall_years_of_professional_experience_21_30  +  overall_years_of_professional_experience_31_40  +
+ overall_years_of_professional_experience_41     +   
+ 
+ Boston  +
+ Chicago +
+ NewYork  +
+ Seattle +
+ London +
+ SanFrancisco + 
+ NewYorkCity +
+ LosAngeles +
+ Portland +
+ Toronto + 
+ Minneapolis  +
+ Washington +
+ Austin +
+ Philadelphia +
+ Atlanta +
+ Denver +
+ WashingtonDC +
+ Houston +
+ Pittsburgh + 
+ Vancouver +
+ Dallas +
+ Madison + 
+ Columbus +
+ Baltimore +
+ Indianapolis +
+ SanDiego +
+ Raleigh +
+ Cleveland +
+ Phoenix +
+ Richmond +
+ Ottawa +
+ Remote +
+ Arlington +
+ Nashville +
+
+ industry_finance             +                          
+ industry_agriculture         +                 industry_art                 +                  industry_business               +              
+ industry_tech                +                 industry_higher_education    +                  industry_primary_education      +             
+ industry_engineering         +                 industry_entertainment       +                  industry_government             +            
+ industry_health              +                 industry_events              +                  industry_insurance              +           
+ industry_law                 +                 industry_marketing           +                  industry_media                  +          
+ industry_npo                 +                 industry_property            +                  industry_hr                     +         
+ industry_retail              +                 industry_sales               +                  industry_social_work            +        
+ industry_transport           +                 industry_telecom
+ 
+ 
+ 
+ , data = train_2)
+
+summary(model_lm_3)
+```
+
+
+#### Collinearity
+```{r}
+# Check for perfect collinearity in explanatory variables
+alias(model_lm_3)
+```
+
+
+#### Variance Inflation Factor
+```{r}
+# car::vif(model_lm_3)
+```
+
+
+#### AIC & BIC for model evaluation
+```{r}
+AIC_3 <- AIC(model_lm_3, k = 100)
+BIC_3 <- BIC(model_lm_3)
+```
+
+
+#### Evaluate Model Prediction
+```{r}
+p_3 <- predict.lm(model_lm_3, test_2)
+
+test_2a <- test_2
+
+test_2a$predict <- p_3
+
+ggplot(test_2a, aes(x = predict, y = log_income))+ 
+    geom_point() +
+    geom_abline(color = "blue")
+
+```
+
+
+#### Calculate RMSE for model
+```{r}
+n_3 <- nrow(test_2a)
+
+diff_3 <- test_2a$predict - test_2a$log_income
+
+squared_diff_3 <- diff_3^2
+
+sum_diff_3 <- sum(squared_diff_3, na.rm = TRUE)
+
+RMSE_3 <- sqrt(sum_diff_3/n_3)
+
+RMSE_3
+```
+
+
+### Second is the optimal model we have found given the baseline model above
+```{r}
+model_lm_4 <- lm(log_income ~   race_other   +     race_asian_american            +    
+ race_black                                      +   gender_man                                      +  gender_non_binary                               +  
+ education_high_school                           +   education_some_college                          +  education_college                               +
+ education_masters                               +   education_phd                                   +  
+ age_18_24                                       +   age_55_64                                       +  years_of_experience_in_field_1                  + 
+ years_of_experience_in_field_2_4                +   years_of_experience_in_field_5_7                +             
+ years_of_experience_in_field_8_10               +   years_of_experience_in_field_11_20              +  years_of_experience_in_field_21_30              +         
+ overall_years_of_professional_experience_1      +   overall_years_of_professional_experience_8_10   +
+ overall_years_of_professional_experience_11_20  +   overall_years_of_professional_experience_21_30  +  
+    
+ 
+Boston  +
+Chicago +
+NewYork  +
+Seattle +
+SanFrancisco + 
+NewYorkCity +
+LosAngeles +
+Portland +
+Toronto + 
+Minneapolis  +
+Washington +
+Austin +
+Philadelphia +
+Atlanta +
+Denver +
+WashingtonDC +
+Houston +
+Dallas +
+Baltimore +
+SanDiego +
+Ottawa +
+Remote +
+Arlington +
+
+ industry_art                 +                 industry_business            +              
+ industry_tech                +                 industry_higher_education    +                  industry_primary_education      +             
+ industry_engineering         +                 industry_entertainment       +                  industry_government             +            
+ industry_health              +                 industry_events              +                            
+ industry_law                 +                 industry_media               +          
+ industry_npo                 +                 industry_property            +                           
+ industry_retail              +                 industry_sales               +                  industry_social_work            +        
+ industry_transport           
+
+ , data = train_2)
+
+summary(model_lm_4)
+```
+
+
+#### Collinearity
+```{r}
+# Check for perfect collinearity in explanatory variables
+alias(model_lm_4)
+```
+
+
+#### Variance Inflation Factor (will not work if there is perfect collinearity between explanatory variables)
+```{r}
+car::vif(model_lm_4)
+```
+
+
+#### AIC & BIC for model evaluation
+```{r}
+AIC_4 <- AIC(model_lm_4, k = 53)
+BIC_4 <- BIC(model_lm_4)
+```
+
+
+#### Evaluate Model Prediction
+```{r}
+p_4 <- predict.lm(model_lm_4, test_2)
+
+test_2b <- test_2
+
+test_2b$predict <- p_4
+
+ggplot(test_2b, aes(x = predict, y = log_income))+ 
+    geom_point() +
+    geom_abline(color = "blue")
+
+```
+
+
+#### Calculate RMSE for model
+```{r}
+n_4 <- nrow(test_2b)
+
+diff_4 <- test_2b$predict - test_2b$log_income
+
+squared_diff_4 <- diff_4^2
+
+sum_diff_4 <- sum(squared_diff_4, na.rm = TRUE)
+
+RMSE_4 <- sqrt(sum_diff_4/n_4)
+
+RMSE_4
+```
+
+#### Model Comparison with AIC (the model with the lowest score is the preferred model)
+```{r}
+AIC_1
+AIC_2
+AIC_3
+AIC_4
+```
+
+
+#### Model Comparison with BIC (the model with the lowest score is the preferred model)
+```{r}
+BIC_1
+BIC_2
+BIC_3
+BIC_4
+```
+
+
+#### Model Comparison with RMSE (the model with the lowest value is the preferred model)
+```{r}
+RMSE_1
+RMSE_2
+RMSE_3
+RMSE_4
+```
+
+
