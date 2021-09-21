@@ -766,12 +766,12 @@ a<-as.data.frame(a)
 a$N<-as.numeric(a$N)
 a$mean<-as.numeric(a$median)
 a$value<-as.numeric(a$value)
-p1 <- ggplot(a, aes(x=reorder(country_code,median),y=median,size=N))+ 
+p1 <- ggplot(a, aes(x=reorder(country_code,median),y=median,size=median))+ 
   geom_point(aes(size=median,color=-1*log10(value)))+
   scale_size(rang=c(5,15))+
   scale_colour_gradient(low="mediumblue",high="pink")+
-  labs(color=expression(-log[10](Pvalue)),size="Questionaire Count",  
-       x="Median Salary",y="Country",title="Median Salary in different countries")
+  labs(color=expression(-log[10](Pvalue)),size="Median",  
+       x="Country",y="Median Salary",title="Median Salary in different countries")
  p1
 ```
 
