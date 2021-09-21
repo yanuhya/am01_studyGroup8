@@ -161,7 +161,7 @@ ask_a_manager_2021_industry <- ask_a_manager_2021[ask_a_manager_2021$industry %i
 
 
 
-# Analysis on Gender
+# Analysis by Gender
 
 Let's do a general analysis to see how respondents are divided among gender, race and industry.
 
@@ -196,6 +196,7 @@ ggplot(ask_a_manager_2021 %>% filter(gender == "Man" | gender == "Woman"),
        aes(x=USD_salary, y=reorder(gender,USD_salary))) +
   scale_x_log10() +
   xlim(0,400000) +
+  labs(title = "Pay difference by gender", x = "Salary in USD", y = "Gender") + 
   geom_boxplot() 
 ```
 
@@ -294,6 +295,7 @@ ask_a_manager_2021 %>%
   ggplot(aes(x= USD_salary, y=reorder(gender,USD_salary))) +
   facet_wrap(~country_code)+
   xlim(0,400000) +
+  labs(title = "Pay difference by gender in different countries ", x = "Salary in USD", y = "Gender") + 
  # theme(axis.text.x = element_text(angle=90, hjust=1)) +
   geom_boxplot() 
 ```
