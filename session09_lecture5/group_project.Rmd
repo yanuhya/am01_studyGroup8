@@ -530,7 +530,7 @@ p1 <- ggplot(a, aes(x=reorder(country_code,median),y=median,size=N))+
 > we can conclude that, the USA, which has the most questionaire data, had the highest median salary as well, and it had the median salary of more than 800000 US dollars. The No.2 highest median salary is Australia, which is about 72000 US dollars. The UK, however, had the lowest median salary compared to other five countries. 
 
 
-# Analysis on gender
+# Analysis by gender
 
 Let us see if there is any noticeable difference in the pays of men and women, and cross-check that with null hypothesis
 
@@ -755,6 +755,7 @@ ask_a_manager_2021_white_non_white %>%
 ```
 From the density plot of salary by race, we do not see a direct relationship of salary with race
 
+
 Let us hypothesize that the mean salary of "White" is same as the mean salary of "Non-White"
 
 ```{r}
@@ -855,7 +856,25 @@ ask_a_manager_2021_white_non_white_industry %>%
 The salary across all the industries seems similar for people belonging to "White" and "Non-White" race.
 
 
-> With our overall analysis in race, we saw that we did not see any noticeable difference in salaries due to the race
+Let us see how the mean salary of other races compare
+
+```{r}
+ask_a_manager_2021_race %>%
+  filter(country_code == "USA") %>% 
+  group_by(race) %>%
+  summarise(mean_salary = mean(USD_salary)) %>% 
+  arrange(-mean_salary) %>% 
+  head(4) %>% 
+  ggplot(aes(x= race, y=mean_salary, fill = race)) +
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(title = "Mean salary by Race in the US", x= "Race", y= "Mean Salary") +
+  geom_col()
+```
+> We see that the "Asian or Asian American" earn more than the other races in the US
+
+
+> With our overall analysis by race, we saw that we did not see any noticeable difference in salaries between White and Non-White. In the US, the salary of "Asian or Asian American" is the highest
 
 # Focus on the US
 
